@@ -386,28 +386,78 @@ document.addEventListener('DOMContentLoaded', async function() {
   <script>
 (function () {
   const ACCESS_KEY = 'e9510e63-943e-4507-9500-7f99440d283f';
+  let sending = false;
 
-  document.addEventListener('submit', async function (e) {
-    const form = e.target;
-    if (!(form instanceof HTMLFormElement)) return;
-    e.preventDefault();
-
-    const data = new FormData(form);
-
-    // если у полей нет name — собираем вручную
-    if (![...data.keys()].length) {
-      form.querySelectorAll('input, textarea, select').forEach((el, i) => {
-        if (el.type === 'submit' || el.type === 'button') return;
-        data.append(el.name || el.id || el.placeholder || ('field_' + i), el.value);
-      });
+  function labelOf(el) {
+    if (el.id) {
+      const l = document.querySelector('label[for="' + el.id + '"]');
+      if (l && l.textContent.trim()) return l.textContent.trim();
     }
+    const wrap = el.closest('label');
+    if (wrap && wrap.textContent.trim()) return wrap.textContent.trim();
+    return el.name || el.placeholder || el.getAttribute('aria-label') || 'field';
+  }
 
+  function collect(form) {
+    const out = {};
+    const put = (k, v) => {
+      if (!v) return;
+      out[k] = out[k] ? out[k] + ', ' + v : v;
+    };
+
+    form.querySelectorAll('input, textarea, select').forEach((el, i) => {
+      if (el.type === 'submit' || el.type === 'button' || el.type === 'hidden') return;
+      if (el.type === 'checkbox' || el.type === 'radio') {
+        if (el.checked) put(el.name || 'Scope', el.value && el.value !== 'on' ? el.value : labelOf(el));
+        return;
+      }
+      const key = el.name || el.placeholder || labelOf(el) || ('field_' + i);
+      put(key, el.value.trim());
+    });
+
+    // кастомные «кнопки-переключатели» (budget, scope и т.п.)
+    const SEL = '[aria-pressed="true"],[aria-checked="true"],[data-selected="true"],' +
+                '.selected,.is-selected,.active,.is-active,.checked,.is-checked';
+    form.querySelectorAll(SEL).forEach(el => {
+      const txt = (el.textContent || '').trim();
+      if (!txt || txt.length > 60) return;
+      const group = el.closest('[data-field]');
+      const key = (group && group.getAttribute('data-field')) ||
+                  el.getAttribute('data-field') || el.getAttribute('name') || 'Selected';
+      if (!Object.values(out).includes(txt)) put(key, txt);
+    });
+
+    return out;
+  }
+
+  function showMessage(form, text, ok) {
+    let box = form.querySelector('#__w3f_msg');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = '__w3f_msg';
+      box.style.cssText = 'margin-top:16px;font-weight:600;';
+      form.appendChild(box);
+    }
+    box.style.color = ok ? '#1f7a3d' : '#c0392b';
+    box.textContent = text;
+  }
+
+  async function send(form, btn) {
+    if (sending) return;
+    sending = true;
+
+    const fields = collect(form);
+    const data = new FormData();
+    Object.entries(fields).forEach(([k, v]) => data.append(k, v));
     data.append('access_key', ACCESS_KEY);
-    data.append('subject', 'New message from aurifer.cz');
+    data.append('subject', 'New brief from aurifer.cz');
     data.append('from_name', 'Aurifer website');
+    const mail = Object.entries(fields).find(([, v]) => /^[^@\s]+@[^@\s]+\.\w+$/.test(v));
+    if (mail) data.append('replyto', mail[1]);
 
-    const btn = form.querySelector('[type=submit], button');
-    const label = btn && btn.textContent;
+    console.log('Web3Forms payload:', fields);
+
+    const label = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
 
     try {
@@ -415,14 +465,39 @@ document.addEventListener('DOMContentLoaded', async function() {
       const json = await res.json();
       if (!json.success) throw new Error(json.message);
       if (btn) btn.textContent = 'Sent ✓';
+      showMessage(form, 'Thank you — your brief has been sent. We will reply shortly.', true);
       form.reset();
+      form.querySelectorAll('.selected,.is-selected,.active,.is-active,.checked,.is-checked')
+          .forEach(el => el.classList.remove('selected','is-selected','active','is-active','checked','is-checked'));
     } catch (err) {
       console.error('Web3Forms:', err);
-      if (btn) { btn.textContent = 'Error — try again'; btn.disabled = false; }
-      return;
+      if (btn) btn.textContent = 'Error — try again';
+      showMessage(form, 'Something went wrong. Please write to info@aurifer.cz.', false);
+    } finally {
+      sending = false;
+      setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = label; } }, 4000);
     }
+  }
 
-    setTimeout(() => { if (btn) { btn.textContent = label; btn.disabled = false; } }, 4000);
+  // перехват клика по кнопке — глушим родной mailto-скрипт
+  document.addEventListener('click', function (e) {
+    const btn = e.target.closest('button, [type=submit], a');
+    if (!btn) return;
+    const form = btn.closest('form');
+    if (!form) return;
+    const isSubmit = btn.type === 'submit' || /send|odeslat|отправ/i.test(btn.textContent || '');
+    if (!isSubmit) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    send(form, btn);
+  }, true);
+
+  // перехват отправки по Enter
+  document.addEventListener('submit', function (e) {
+    if (!(e.target instanceof HTMLFormElement)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    send(e.target, e.target.querySelector('[type=submit], button'));
   }, true);
 })();
 </script>

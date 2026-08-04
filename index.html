@@ -386,119 +386,101 @@ document.addEventListener('DOMContentLoaded', async function() {
   <script>
 (function () {
   const ACCESS_KEY = 'e9510e63-943e-4507-9500-7f99440d283f';
-  let sending = false;
+
+  function init() {
+    const form = document.getElementById('briefForm');
+    if (!form) return setTimeout(init, 300);
+
+    const oldBtn = form.querySelector('.form-bottom button, button[type=submit], .form-bottom [role=button]')
+                || Array.from(form.querySelectorAll('button')).find(b => /send/i.test(b.textContent));
+    if (!oldBtn) return setTimeout(init, 300);
+
+    // клон без родных обработчиков
+    const btn = oldBtn.cloneNode(true);
+    btn.type = 'button';
+    oldBtn.replaceWith(btn);
+
+    form.addEventListener('submit', e => { e.preventDefault(); e.stopImmediatePropagation(); }, true);
+    btn.addEventListener('click', () => send(form, btn));
+  }
 
   function labelOf(el) {
-    if (el.id) {
-      const l = document.querySelector('label[for="' + el.id + '"]');
-      if (l && l.textContent.trim()) return l.textContent.trim();
-    }
-    const wrap = el.closest('label');
-    if (wrap && wrap.textContent.trim()) return wrap.textContent.trim();
-    return el.name || el.placeholder || el.getAttribute('aria-label') || 'field';
+    const grp = el.closest('.field, .field-group, .field-row > *');
+    const lab = grp && grp.querySelector('label');
+    if (lab) return lab.textContent.trim();
+    return el.placeholder || el.name || 'Field';
   }
 
   function collect(form) {
     const out = {};
-    const put = (k, v) => {
-      if (!v) return;
-      out[k] = out[k] ? out[k] + ', ' + v : v;
-    };
 
-    form.querySelectorAll('input, textarea, select').forEach((el, i) => {
-      if (el.type === 'submit' || el.type === 'button' || el.type === 'hidden') return;
-      if (el.type === 'checkbox' || el.type === 'radio') {
-        if (el.checked) put(el.name || 'Scope', el.value && el.value !== 'on' ? el.value : labelOf(el));
-        return;
-      }
-      const key = el.name || el.placeholder || labelOf(el) || ('field_' + i);
-      put(key, el.value.trim());
+    form.querySelectorAll('input, textarea').forEach(el => {
+      if (!el.value.trim()) return;
+      out[labelOf(el)] = el.value.trim();
     });
 
-    // кастомные «кнопки-переключатели» (budget, scope и т.п.)
-    const SEL = '[aria-pressed="true"],[aria-checked="true"],[data-selected="true"],' +
-                '.selected,.is-selected,.active,.is-active,.checked,.is-checked';
-    form.querySelectorAll(SEL).forEach(el => {
-      const txt = (el.textContent || '').trim();
-      if (!txt || txt.length > 60) return;
-      const group = el.closest('[data-field]');
-      const key = (group && group.getAttribute('data-field')) ||
-                  el.getAttribute('data-field') || el.getAttribute('name') || 'Selected';
-      if (!Object.values(out).includes(txt)) put(key, txt);
-    });
+    const budget = form.querySelector('#budgetSeg [aria-pressed="true"]');
+    if (budget) out['Budget'] = budget.dataset.val || budget.textContent.trim();
+
+    const scope = [...form.querySelectorAll('#scopeGrid .scope-cell.checked, #scopeGrid [aria-checked="true"]')]
+      .map(el => el.dataset.val || el.textContent.trim());
+    if (scope.length) out['Scope'] = [...new Set(scope)].join(', ');
 
     return out;
   }
 
-  function showMessage(form, text, ok) {
-    let box = form.querySelector('#__w3f_msg');
-    if (!box) {
-      box = document.createElement('div');
-      box.id = '__w3f_msg';
-      box.style.cssText = 'margin-top:16px;font-weight:600;';
-      form.appendChild(box);
-    }
-    box.style.color = ok ? '#1f7a3d' : '#c0392b';
+  function status(text, isError) {
+    const box = document.getElementById('formStatus');
+    if (!box) return;
+    box.classList.remove('ok');
+    box.style.color = isError ? '#c0392b' : '#151414';
     box.textContent = text;
   }
 
   async function send(form, btn) {
-    if (sending) return;
-    sending = true;
+    if (btn.disabled) return;
 
     const fields = collect(form);
+    console.log('Web3Forms payload:', fields);
+
     const data = new FormData();
     Object.entries(fields).forEach(([k, v]) => data.append(k, v));
     data.append('access_key', ACCESS_KEY);
-    data.append('subject', 'New brief from aurifer.cz');
+    data.append('subject', 'New brief — ' + (fields['Company name'] || 'aurifer.cz'));
     data.append('from_name', 'Aurifer website');
-    const mail = Object.entries(fields).find(([, v]) => /^[^@\s]+@[^@\s]+\.\w+$/.test(v));
-    if (mail) data.append('replyto', mail[1]);
+    const mail = Object.values(fields).find(v => /^[^@\s]+@[^@\s]+\.\w+$/.test(v));
+    if (mail) data.append('replyto', mail);
 
-    console.log('Web3Forms payload:', fields);
-
-    const label = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'SENDING…';
+    status('Sending…');
 
     try {
       const res = await fetch('https://api.web3forms.com/submit', { method: 'POST', body: data });
       const json = await res.json();
       if (!json.success) throw new Error(json.message);
-      if (btn) btn.textContent = 'Sent ✓';
-      showMessage(form, 'Thank you — your brief has been sent. We will reply shortly.', true);
+
+      btn.textContent = 'SENT ✓';
+      status('Thank you. Your brief has been sent — we will reply shortly.');
       form.reset();
-      form.querySelectorAll('.selected,.is-selected,.active,.is-active,.checked,.is-checked')
-          .forEach(el => el.classList.remove('selected','is-selected','active','is-active','checked','is-checked'));
+      form.querySelectorAll('#budgetSeg [aria-pressed="true"]')
+          .forEach(el => el.setAttribute('aria-pressed', 'false'));
+      form.querySelectorAll('#scopeGrid .scope-cell').forEach(el => {
+        el.classList.remove('checked');
+        el.setAttribute('aria-checked', 'false');
+      });
     } catch (err) {
       console.error('Web3Forms:', err);
-      if (btn) btn.textContent = 'Error — try again';
-      showMessage(form, 'Something went wrong. Please write to info@aurifer.cz.', false);
-    } finally {
-      sending = false;
-      setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = label; } }, 4000);
+      btn.textContent = 'ERROR';
+      status('Something went wrong. Please write to info@aurifer.cz.', true);
     }
+
+    setTimeout(() => { btn.disabled = false; btn.textContent = label; }, 4000);
   }
 
-  // перехват клика по кнопке — глушим родной mailto-скрипт
-  document.addEventListener('click', function (e) {
-    const btn = e.target.closest('button, [type=submit], a');
-    if (!btn) return;
-    const form = btn.closest('form');
-    if (!form) return;
-    const isSubmit = btn.type === 'submit' || /send|odeslat|отправ/i.test(btn.textContent || '');
-    if (!isSubmit) return;
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    send(form, btn);
-  }, true);
-
-  // перехват отправки по Enter
-  document.addEventListener('submit', function (e) {
-    if (!(e.target instanceof HTMLFormElement)) return;
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    send(e.target, e.target.querySelector('[type=submit], button'));
-  }, true);
+  document.addEventListener('DOMContentLoaded', init);
+  init();
 })();
 </script>
 </body>
